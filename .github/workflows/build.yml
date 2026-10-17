@@ -1,0 +1,101 @@
+name: Build weasel 0.17.4 + null_m_layout fix
+
+# Builds the patched 0.17.4 on GitHub's own Windows runners (VS2022 + Windows SDK
+# are preinstalled there). Produces the NSIS installer (x64 + Win32 + ARM64) and
+# the debug symbols as workflow artifacts.
+#
+# Why this file exists instead of reusing .github/workflows/commit-ci.yml:
+#   - commit-ci.yml targets `windows-2019`, which GitHub has retired, and
+#     configures the build from env.vs2019.bat (toolset v142 / bjam msvc-14.2);
+#   - this one targets `windows-2022` and uses env.vs2022.bat (v143 / msvc-14.3).
+# Everything else follows the upstream steps (bootstrap boost, fetch prebuilt
+# librime with get-rime.ps1 -use dev, build data, build weasel + installer).
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      boost_version: 1.84.0
+      BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+
+      - name: Fetch all tags
+        run: git fetch --tags
+
+      - name: Configure build environment (VS2022)
+        shell: bash
+        run: |
+          cp env.vs2022.bat env.bat
+          echo git_ref_name="$(git describe --always)" >> "$GITHUB_ENV"
+
+      - name: Cache Boost
+        id: cache-boost
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BOOST_ROOT }}
+          key: ${{ runner.os }}-boost-${{ env.boost_version }}
+
+      - name: Install Boost
+        if: steps.cache-boost.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          ./install_boost.bat
+          ./build.bat boost arm64
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Get Rime files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\get-rime.ps1 -use dev
+
+      - name: Build data
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat data
+
+      - name: Build Weasel (x64, Win32, ARM64) + installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build.bat arm64 installer
+
+      - name: Show build output
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host '--- output\archives ---'
+          Get-ChildItem output\archives -ErrorAction SilentlyContinue | ForEach-Object { '{0}  {1} B' -f $_.Name, $_.Length }
+          Write-Host '--- output\*.pdb ---'
+          Get-ChildItem output\*.pdb -ErrorAction SilentlyContinue | ForEach-Object { '{0}  {1} B' -f $_.Name, $_.Length }
+
+      - name: Compress debug symbols
+        if: success()
+        shell: pwsh
+        run: |
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe" }
+          Write-Host "using $sevenZip"
+          & $sevenZip a -t7z 'output/archives/debug_symbols.7z' 'output/*.pdb' -r
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weasel-0.17.4-patched
+          if-no-files-found: error
+          path: |
+            output\archives\weasel*.exe
+            output\archives\debug_symbols.7z
