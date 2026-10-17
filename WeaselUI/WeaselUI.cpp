@@ -9,7 +9,12 @@ class weasel::UIImpl {
   WeaselPanel panel;
 
   UIImpl(weasel::UI& ui) : panel(ui), shown(false) {}
-  ~UIImpl() {}
+  ~UIImpl() {
+    // A panel HWND must never outlive the panel object: any message delivered
+    // afterwards would be dispatched into freed memory.
+    if (panel.IsWindow())
+      panel.DestroyWindow();
+  }
   void Refresh() {
     if (!panel.IsWindow())
       return;
@@ -84,6 +89,14 @@ VOID CALLBACK UIImpl::OnTimer(_In_ HWND hwnd,
 
 bool UI::Create(HWND parent) {
   if (pimpl_) {
+    if (pimpl_->panel.IsWindow()) {
+      // The panel object can only track one HWND, so a second Create() would
+      // silently orphan the old window in a release build (ATL only asserts
+      // in debug) and that orphan keeps dispatching WM_PAINT into this object
+      // after m_layout has been released. Reuse the live window instead.
+      pimpl_->panel.Refresh();
+      return true;
+    }
     pimpl_->panel.Create(
         parent, 0, 0, WS_POPUP,
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,

@@ -97,6 +97,8 @@ WeaselPanel::~WeaselPanel() {
 }
 
 void WeaselPanel::_ResizeWindow() {
+  if (!m_layout)
+    return;
   CDCHandle dc = GetDC();
   CSize m_size = m_layout->GetContentSize();
   SetWindowPos(NULL, 0, 0, m_size.cx, m_size.cy,
@@ -125,6 +127,15 @@ void WeaselPanel::_CreateLayout() {
                                     layout, pDWR);
     }
   }
+
+  // layout_type comes over IPC. A value this build does not know (for example
+  // one written by a newer peer) matches none of the branches above and would
+  // leave `layout` null, while every caller assumes m_layout is usable. Fall
+  // back to the default layout instead of storing a null pointer.
+  if (layout == NULL) {
+    layout = new VerticalLayout(m_style, m_ctx, m_status, pDWR);
+  }
+
   m_layout = layout;
 }
 
@@ -258,7 +269,10 @@ LRESULT WeaselPanel::OnLeftClickedUp(UINT uMsg,
                                      WPARAM wParam,
                                      LPARAM lParam,
                                      BOOL& bHandled) {
-  if (hide_candidates) {
+  // hide_candidates is not cleared when the panel loses its layout, so a
+  // window that is no longer managed can still reach the layout below:
+  // check both, and note this handler also calls DestroyWindow()/RedrawWindow().
+  if (hide_candidates || !m_layout) {
     bHandled = true;
     return 0;
   }
@@ -296,7 +310,8 @@ LRESULT WeaselPanel::OnLeftClickedDown(UINT uMsg,
                                        WPARAM wParam,
                                        LPARAM lParam,
                                        BOOL& bHandled) {
-  if (hide_candidates) {
+  // See OnLeftClickedUp: hide_candidates alone is not enough.
+  if (hide_candidates || !m_layout) {
     bHandled = true;
     return 0;
   }
@@ -423,6 +438,10 @@ LRESULT WeaselPanel::OnMouseMove(UINT uMsg,
                                  WPARAM wParam,
                                  LPARAM lParam,
                                  BOOL& bHandled) {
+  // No layout means nothing to hit-test against (a stale window can still
+  // receive mouse messages).
+  if (!m_layout)
+    return 0;
   if (m_style.hover_type == UIStyle::NONE)
     return 0;
   if (m_mouse_entry == false) {
@@ -945,7 +964,11 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
   ::SelectObject(memDC, memBitmap);
   ReleaseDC(hdc);
   bool drawn = false;
-  if (!hide_candidates) {
+  // m_layout is released by OnDestroy()/the destructor, but the panel object
+  // can outlive its own HWND (UIImpl owns the panel and UI::Create() reuses
+  // it), so a WM_PAINT can still arrive with no layout. Never take this
+  // branch without one.
+  if (!hide_candidates && m_layout) {
     CRect auxrc = m_layout->GetAuxiliaryRect();
     CRect preeditrc = m_layout->GetPreeditRect();
     if (m_istorepos) {
