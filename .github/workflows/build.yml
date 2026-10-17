@@ -21,6 +21,12 @@ jobs:
     env:
       boost_version: 1.84.0
       BOOST_ROOT: ${{ github.workspace }}\deps\boost_1_84_0
+      # The projects do not pin an SDK version, so msbuild picks the newest one
+      # installed on the image (10.0.26100.0), and that SDK dropped 32-bit ARM
+      # support -> `error MSB8087` in the Release|ARM configuration that
+      # `build.bat arm64` builds. 10.0.22621.0 still supports ARM32 and is also
+      # installed on the windows-2022 image.
+      WindowsTargetPlatformVersion: 10.0.22621.0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,11 +72,38 @@ jobs:
           $ErrorActionPreference = 'Stop'
           .\build.bat data
 
-      - name: Build Weasel (x64, Win32, ARM64) + installer
+      - name: Build Weasel (x64, Win32, ARM, ARM64) + installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # build.bat's `:error` label only echoes and then falls through to
+          # `:end`, so the batch file returns 0 even when msbuild failed.
+          # Verify the expected outputs ourselves instead of trusting it.
           .\build.bat arm64 installer
+
+          Write-Host '--- verifying build outputs ---'
+          $required = @(
+            'output\weasel.dll',
+            'output\weaselx64.dll',
+            'output\Win32\weasel.dll',
+            'output\WeaselServer.exe',
+            'output\Win32\WeaselServer.exe'
+          )
+          $missing = @($required | Where-Object { -not (Test-Path $_) })
+          $installer = @(Get-ChildItem 'output\archives' -Filter 'weasel*-installer.exe' -ErrorAction SilentlyContinue)
+          if ($missing.Count -gt 0 -or $installer.Count -eq 0) {
+            Write-Host '### build outputs missing ###'
+            if ($missing.Count -gt 0) { Write-Host ('  missing: ' + ($missing -join ', ')) }
+            if ($installer.Count -eq 0) { Write-Host '  missing: output\archives\weasel*-installer.exe' }
+            Get-ChildItem msbuild*.log -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host ('--- tail of ' + $_.Name + ' ---')
+              Get-Content $_.FullName -Tail 80
+            }
+            Write-Host '--- output dir ---'
+            Get-ChildItem output -ErrorAction SilentlyContinue | ForEach-Object { '  {0}  {1} B' -f $_.Name, $_.Length }
+            throw 'weasel build did not produce the expected outputs'
+          }
+          Write-Host ('installer: ' + (($installer | ForEach-Object { '{0} ({1} B)' -f $_.Name, $_.Length }) -join ', '))
 
       - name: Show build output
         if: always()
