@@ -123,25 +123,42 @@ jobs:
           .\build.bat arm64 installer
 
           Write-Host '--- verifying build outputs ---'
+          # Names as they actually land in output\: the x86 and x64 binaries sit
+          # side by side there (weasel.dll / weaselx64.dll), only the x86 exes
+          # go to output\Win32\.
           $required = @(
             'output\weasel.dll',
             'output\weaselx64.dll',
-            'output\Win32\weasel.dll',
+            'output\weasel.ime',
+            'output\weaselx64.ime',
             'output\WeaselServer.exe',
-            'output\Win32\WeaselServer.exe'
+            'output\WeaselDeployer.exe',
+            'output\WeaselSetup.exe',
+            'output\Win32\WeaselServer.exe',
+            'output\Win32\WeaselDeployer.exe',
+            'output\rime.dll',
+            'output\WinSparkle.dll'
           )
           $missing = @($required | Where-Object { -not (Test-Path $_) })
           $installer = @(Get-ChildItem 'output\archives' -Filter 'weasel*-installer.exe' -ErrorAction SilentlyContinue)
-          if ($missing.Count -gt 0 -or $installer.Count -eq 0) {
+          # every msbuild log the script left behind must have ended cleanly
+          $badLogs = @()
+          foreach ($l in @(Get-ChildItem msbuild*.log -ErrorAction SilentlyContinue)) {
+            if (-not (Select-String -Path $l.FullName -Pattern '0 Error\(s\)' -Quiet)) { $badLogs += $l.Name }
+          }
+          if ($missing.Count -gt 0 -or $installer.Count -eq 0 -or $badLogs.Count -gt 0) {
             Write-Host '### build outputs missing ###'
             if ($missing.Count -gt 0) { Write-Host ('  missing: ' + ($missing -join ', ')) }
             if ($installer.Count -eq 0) { Write-Host '  missing: output\archives\weasel*-installer.exe' }
+            if ($badLogs.Count -gt 0) { Write-Host ('  msbuild logs without "0 Error(s)": ' + ($badLogs -join ', ')) }
             Get-ChildItem msbuild*.log -ErrorAction SilentlyContinue | ForEach-Object {
               Write-Host ('--- tail of ' + $_.Name + ' ---')
               Get-Content $_.FullName -Tail 80
             }
-            Write-Host '--- output dir ---'
-            Get-ChildItem output -ErrorAction SilentlyContinue | ForEach-Object { '  {0}  {1} B' -f $_.Name, $_.Length }
+            foreach ($d in @('output', 'output\Win32', 'output\archives')) {
+              Write-Host ('--- ' + $d + ' ---')
+              Get-ChildItem $d -ErrorAction SilentlyContinue | ForEach-Object { '  {0}  {1} B' -f $_.Name, $_.Length }
+            }
             throw 'weasel build did not produce the expected outputs'
           }
           Write-Host ('installer: ' + (($installer | ForEach-Object { '{0} ({1} B)' -f $_.Name, $_.Length }) -join ', '))
@@ -156,7 +173,9 @@ jobs:
           Get-ChildItem output\*.pdb -ErrorAction SilentlyContinue | ForEach-Object { '{0}  {1} B' -f $_.Name, $_.Length }
 
       - name: Compress debug symbols
-        if: success()
+        # always: a late verification failure should still leave the symbols
+        # (and the installer) in the artifact for inspection
+        if: always()
         shell: pwsh
         run: |
           $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
@@ -165,7 +184,7 @@ jobs:
           & $sevenZip a -t7z 'output/archives/debug_symbols.7z' 'output/*.pdb' -r
 
       - name: Upload artifacts
-        if: success()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: weasel-0.17.4-patched
